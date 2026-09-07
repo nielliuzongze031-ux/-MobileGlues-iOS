@@ -1,0 +1,62 @@
+name: Build MobileGlues 1.3.5 for iOS arm64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Install tools
+        run: brew install cmake ninja
+
+      - name: Download MobileGlues
+        run: |
+          git clone https://github.com/MobileGL-Dev/MobileGlues.git
+          cd MobileGlues
+          git fetch --tags --force
+          git checkout V1.3.5 || git checkout v1.3.5 || git checkout 1.3.5
+
+      - name: Build iOS arm64
+        run: |
+          SDK="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          cmake -S MobileGlues/src/main/cpp \
+                -B build \
+                -G Ninja \
+                -DMACOS=1 \
+                -DCMAKE_CROSSCOMPILING=true \
+                -DCMAKE_SYSTEM_NAME=Darwin \
+                -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+                -DCMAKE_OSX_SYSROOT="$SDK" \
+                -DCMAKE_OSX_ARCHITECTURES=arm64 \
+                -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+                -DCMAKE_C_FLAGS="-arch arm64" \
+                -DCMAKE_BUILD_TYPE=RelWithDebInfo
+
+          cmake --build build --target mobileglues -j3
+
+      - name: Prepare dylibs
+        run: |
+          mkdir artifact
+          cp build/libmobileglues.dylib artifact/
+
+          find MobileGlues -name "libspirv-cross-c-shared*.dylib" -print
+
+          SPIRV=$(find MobileGlues -name "libspirv-cross-c-shared.0.dylib" | head -1)
+
+          if [ -n "$SPIRV" ]; then
+            cp "$SPIRV" artifact/
+          fi
+
+          chmod +x artifact/*.dylib
+          codesign --force --sign - artifact/*.dylib
+
+          file artifact/*.dylib
+
+      - name: Upload result
+        uses: actions/upload-artifact@v4
+        with:
+          name: MobileGlues-1.3.5-iOS-arm64
+          path: artifact/*.dylib
