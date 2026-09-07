@@ -1,7 +1,10 @@
-name: Build MobileGlues for iOS arm64
+name: Build MobileGlues 1.3.5 for iOS arm64
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -12,44 +15,82 @@ jobs:
         run: |
           brew install cmake ninja
 
-      - name: Download MobileGlues source
+      - name: Download exact MobileGlues 1.3.5 source
         run: |
-          git clone --recursive https://github.com/MobileGL-Dev/MobileGlues.git
-          cd MobileGlues
+          set -euxo pipefail
+
+          git clone https://github.com/MobileGL-Dev/MobileGlues-plugin.git
+
+          cd MobileGlues-plugin
+
+          git checkout e1d0b24
+
           git submodule update --init --recursive
+
+          echo "Plugin commit:"
+          git rev-parse HEAD
+
+          echo "MobileGlues commit:"
+          git -C MobileGlues rev-parse HEAD
+
+          test -f MobileGlues/MobileGlues-cpp/CMakeLists.txt
 
       - name: Build MobileGlues for iOS arm64
         run: |
-          SDKROOT="$(xcrun --sdk iphoneos --show-sdk-path)"
+          set -euxo pipefail
+
+          SDKPATH="$(xcrun --sdk iphoneos --show-sdk-path)"
 
           cmake \
-            -S MobileGlues/MobileGlues-cpp \
-            -B build \
+            -S MobileGlues-plugin/MobileGlues/MobileGlues-cpp \
+            -B build-ios \
             -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_SYSTEM_NAME=iOS \
-            -DCMAKE_OSX_SYSROOT="$SDKROOT" \
+            -DMACOS=1 \
+            -DCMAKE_CROSSCOMPILING=true \
+            -DCMAKE_SYSTEM_NAME=Darwin \
+            -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+            -DCMAKE_OSX_SYSROOT="$SDKPATH" \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
-            -DBUILD_SHARED_LIBS=ON
+            -DCMAKE_C_FLAGS="-arch arm64" \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-          cmake --build build --config Release -j 3
+          cmake \
+            --build build-ios \
+            --target mobileglues \
+            -j"$(sysctl -n hw.ncpu)"
 
-      - name: Find dylibs
+      - name: Prepare dylibs
         run: |
-          echo "Searching for compiled dylibs..."
-          find build -type f -name "*.dylib" -print
+          set -euxo pipefail
 
-          mkdir -p output
+          mkdir -p artifact
 
-          find build -type f -name "*.dylib" -exec cp {} output/ \;
+          MG_DYLIB="$(find build-ios -name 'libmobileglues.dylib' -print -quit)"
 
-          echo "Output:"
-          ls -lah output
+          test -n "$MG_DYLIB"
 
-      - name: Upload iOS dylibs
+          cp "$MG_DYLIB" artifact/libmobileglues.dylib
+
+          SPIRV_DYLIB="$(find MobileGlues-plugin/MobileGlues \
+            -name 'libspirv-cross-c-shared.0.dylib' \
+            -print -quit || true)"
+
+          if [ -n "$SPIRV_DYLIB" ]; then
+            cp "$SPIRV_DYLIB" \
+              artifact/libspirv-cross-c-shared.0.dylib
+          fi
+
+          echo "Artifacts:"
+          ls -lah artifact
+
+          file artifact/*
+
+          lipo -info artifact/libmobileglues.dylib || true
+
+      - name: Upload result
         uses: actions/upload-artifact@v4
         with:
-          name: MobileGlues-iOS-arm64
-          path: output/
+          name: MobileGlues-1.3.5-iOS-arm64
+          path: artifact/
           if-no-files-found: error
