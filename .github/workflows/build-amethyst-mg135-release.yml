@@ -1,4 +1,4 @@
-name: Build Amethyst 2.1.3 + MobileGlues 1.3.5 Release
+name: Build Clean Amethyst 2.1.3 + MobileGlues 1.3.5
 
 on:
   workflow_dispatch:
@@ -13,25 +13,30 @@ jobs:
     env:
       AMETHYST_URL: https://github.com/catsruledogs/Amethyst-iOS-25/releases/download/2.1.3/AngelAuraAmethyst-2.1.3.ipa
       AMETHYST_SHA256: 2c0d01d117b2dc8caa96fef7843429d5c331f4a90be33a9049dada17fe13ab65
-      RELEASE_TAG: amethyst-mg135
-      OUTPUT_IPA: AngelAuraAmethyst-2.1.3-MG1.3.5.ipa
+      OUTPUT_IPA: AngelAuraAmethyst-2.1.3-MG1.3.5-CLEAN.ipa
 
     steps:
       - name: Install tools
         run: |
           brew install cmake ninja
 
-      - name: Download exact Amethyst 2.1.3 IPA
+      - name: Download exact Amethyst 2.1.3
         run: |
           set -euxo pipefail
-          curl -L --fail --retry 3 "$AMETHYST_URL" -o Amethyst-2.1.3.ipa
-          echo "$AMETHYST_SHA256  Amethyst-2.1.3.ipa" | shasum -a 256 -c -
-          ls -lh Amethyst-2.1.3.ipa
+
+          curl -L --fail --retry 3 \
+            "$AMETHYST_URL" \
+            -o Amethyst-2.1.3.ipa
+
+          echo "$AMETHYST_SHA256  Amethyst-2.1.3.ipa" \
+            | shasum -a 256 -c -
 
       - name: Download exact MobileGlues 1.3.5 source
         run: |
           set -euxo pipefail
+
           git clone https://github.com/MobileGL-Dev/MobileGlues-plugin.git
+
           cd MobileGlues-plugin
           git checkout e1d0b24
           git submodule update --init --recursive
@@ -56,67 +61,126 @@ jobs:
             -DCMAKE_C_FLAGS="-arch arm64" \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo
 
-          cmake --build build-ios --target mobileglues -j"$(sysctl -n hw.ncpu)"
+          cmake \
+            --build build-ios \
+            --target mobileglues \
+            -j"$(sysctl -n hw.ncpu)"
 
-      - name: Replace MobileGlues inside IPA
+      - name: Extract IPA
         run: |
           set -euxo pipefail
 
           rm -rf ipa-work
           mkdir ipa-work
 
-          ditto -x -k Amethyst-2.1.3.ipa ipa-work
+          ditto -x -k \
+            Amethyst-2.1.3.ipa \
+            ipa-work
 
-          APP_DIR="$(find ipa-work/Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
+          APP_DIR="$(find ipa-work/Payload \
+            -maxdepth 1 \
+            -type d \
+            -name '*.app' \
+            -print -quit)"
+
           test -n "$APP_DIR"
 
-          TARGET="$APP_DIR/Frameworks/libmobileglues.dylib"
-          test -f "$TARGET"
+          echo "APP_DIR=$APP_DIR" >> "$GITHUB_ENV"
 
-          MG_DYLIB="$(find build-ios -name 'libmobileglues.dylib' -print -quit)"
+      - name: Replace MobileGlues
+        run: |
+          set -euxo pipefail
+
+          TARGET="$APP_DIR/Frameworks/libmobileglues.dylib"
+
+          MG_DYLIB="$(find build-ios \
+            -name 'libmobileglues.dylib' \
+            -print -quit)"
+
+          test -f "$TARGET"
           test -n "$MG_DYLIB"
 
           cp -f "$MG_DYLIB" "$TARGET"
           chmod 755 "$TARGET"
 
+          echo "New MobileGlues:"
           file "$TARGET"
+          ls -lh "$TARGET"
           lipo -info "$TARGET" || true
 
-      - name: Repack IPA
+      - name: Remove old signing data
+        run: |
+          set -euxo pipefail
+
+          echo "Removing old _CodeSignature folders..."
+
+          find "$APP_DIR" \
+            -type d \
+            -name "_CodeSignature" \
+            -prune \
+            -exec rm -rf {} + || true
+
+          echo "Removing old provisioning profiles..."
+
+          find "$APP_DIR" \
+            -name "embedded.mobileprovision" \
+            -type f \
+            -delete || true
+
+          echo "Removing old Mach-O code signatures..."
+
+          while IFS= read -r -d '' FILE; do
+            if file "$FILE" | grep -q "Mach-O"; then
+              echo "Stripping signature: $FILE"
+              codesign --remove-signature "$FILE" 2>/dev/null || true
+            fi
+          done < <(find "$APP_DIR" -type f -print0)
+
+          echo "Remaining signature directories:"
+          find "$APP_DIR" -name "_CodeSignature" -print || true
+
+          echo "Remaining provisioning profiles:"
+          find "$APP_DIR" -name "embedded.mobileprovision" -print || true
+
+      - name: Verify MobileGlues still exists
+        run: |
+          set -euxo pipefail
+
+          TARGET="$APP_DIR/Frameworks/libmobileglues.dylib"
+
+          test -f "$TARGET"
+
+          file "$TARGET"
+          lipo -info "$TARGET" || true
+          ls -lh "$TARGET"
+
+      - name: Build clean unsigned IPA
         run: |
           set -euxo pipefail
 
           rm -f "$OUTPUT_IPA"
 
           cd ipa-work
-          /usr/bin/zip -qry -y "../$OUTPUT_IPA" Payload
+
+          /usr/bin/zip \
+            -qry \
+            -y \
+            "../$OUTPUT_IPA" \
+            Payload
+
           cd ..
 
           unzip -t "$OUTPUT_IPA" >/dev/null
+
+          echo "Final IPA:"
           ls -lh "$OUTPUT_IPA"
+
           shasum -a 256 "$OUTPUT_IPA"
 
-      - name: Upload Actions backup
+      - name: Upload clean IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Amethyst-2.1.3-MG1.3.5
+          name: Amethyst-2.1.3-MG1.3.5-CLEAN
           path: ${{ env.OUTPUT_IPA }}
           compression-level: 0
-
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euxo pipefail
-
-          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$OUTPUT_IPA" \
-              --repo "$GITHUB_REPOSITORY" \
-              --clobber
-          else
-            gh release create "$RELEASE_TAG" "$OUTPUT_IPA" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
-              --title "Amethyst 2.1.3 + MobileGlues 1.3.5" \
-              --notes "Amethyst 2.1.3 with MobileGlues 1.3.5. The IPA must be re-signed before installation."
-          fi
+          if-no-files-found: error
